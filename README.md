@@ -16,8 +16,8 @@ Vulkan provides the following minimum 32-bit floating point precision. Individua
 
 | Function       | Precision | Scientific | Range         |
 |----------------|-----------|------------|---------------|
-| cos(x)         | $2^{-11}$ | 4.883e-4   | $[-\pi, \pi]$ |
 | sin(x)         | $2^{-11}$ | 4.883e-4   | $[-\pi, \pi]$ |
+| cos(x)         | $2^{-11}$ | 4.883e-4   | $[-\pi, \pi]$ |
 | atan(x)        | 4096 ULP  |            | full          |
 | inversesqrt(x) | 2 ULP     |            | full          |
 | exp(x)         | 3+2ax ULP |            | full          |
@@ -45,17 +45,17 @@ NVIDIA documents their 32-bit floating point precision for CUDA.
 
 | Function   | Precision    | Scientific | Range         |
 |------------|--------------|------------|---------------|
-| __cosf(x)  | $2^{-21.41}$ | 3.589e-7   | $[-\pi, \pi]$ |
 | __sinf(x)  | $2^{-21.19}$ | 4.180e-7   | $[-\pi, \pi]$ |
+| __cosf(x)  | $2^{-21.41}$ | 3.589e-7   | $[-\pi, \pi]$ |
 | __logf(x)  | $2^{-21.41}$ | 3.589e-7   | $[0.5, 2]$    |
 | __logf(x)  | 2 ULP        |            | $R/[0.5, 2]$  |
 | __log2f(x) | $2^{-22}$    | 2.384e-7   | $[0.5, 2]$    |
 | __log2f(x) | 2 ULP        |            | $R/[0.5, 2]$  |
-| cosf(x)    | 2 ULP        |            | full          |
 | sinf(x)    | 2 ULP        |            | full          |
+| cosf(x)    | 2 ULP        |            | full          |
 | tanf(x)    | 4 ULP        |            | full          |
-| asinf(x)   | 2 ULP        |            | full          |
-| acosf(x)   | 2 ULP        |            | full          |
+| asinf(x)   | 2 ULP        |            | $[-1, 1]$     |
+| acosf(x)   | 2 ULP        |            | $[-1, 1]$     |
 | atanf(x)   | 2 ULP        |            | full          |
 | expf(x)    | 2 ULP        |            | full          |
 | exp2f(x)   | 2 ULP        |            | full          |
@@ -75,7 +75,16 @@ Some special cases:
 The Vulkan precision seems to match the intrinsic trigonometric functions. Below, results measured on an RTX 3090 can
 be found.
 
-| Function | Absolute | ULP error | Range         |
-|----------|----------|-----------|---------------|
-| cos(x)   | 4.172e-7 | 12303662  | $[-\pi, \pi]$ |
-| sin(x)   | 3.576e-7 | 16777215  | $[-\pi, \pi]$ |
+| Function | Absolute | ULP error | Range             |
+|----------|----------|-----------|-------------------|
+| sin(x)   | 3.576e-7 | 16777215  | $[-\pi, \pi]$     |
+| cos(x)   | 4.172e-7 | 12303662  | $[-\pi, \pi]$     |
+| tan(x)   | 5.155e+5 | 16777215  | $(-\pi/2, \pi/2)$ |
+| atan(x)  | 1.192e-7 | 8388607   | full              |
+| asin(x)  | 2.384e-7 | 8388607   | $[-1, 1]$         |
+| acos(x)  | 2.384e-7 | 2         | $[-1, 1]$         |
+| exp(x)   | 9.537e-7 | 2         | $[0.5, 2]$        |
+| exp2(x)  | 2.384e-7 | 1         | $[0.5, 2]$        |
+| log(x)   | 7.629e-6 | 10471343  | $(0, \infty)$     |
+| log2(x)  | 7.629e-6 | 10437179  | $(0, \infty)$     |
+| sqrt(x)  | 1.10e+12 | 1         | $[0, \infty)$     |

@@ -136,6 +136,46 @@ std::enable_if_t<std::is_floating_point_v<T>, T> ulp(T x) {
     }
 }
 
+template<typename float_tpl>
+void computeMaximumError(
+        sgl::vk::Renderer* renderer, sgl::vk::CommandBufferPtr& commandBuffer, sgl::vk::ComputeDataPtr& computeData,
+        sgl::vk::BufferPtr& inputBuffer, sgl::vk::BufferPtr& outputBuffer, sgl::vk::BufferPtr& stagingBuffer,
+        std::vector<float>& correctOutputValues, float_tpl*& ptr, float_tpl& maxAbsError, uint64_t& maxUlpError) {
+    stagingBuffer->unmapMemory();
+
+    renderer->pushCommandBuffer(commandBuffer);
+    renderer->beginCommandBuffer();
+    stagingBuffer->copyDataTo(inputBuffer, renderer->getVkCommandBuffer());
+    renderer->insertBufferMemoryBarrier(
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+            inputBuffer);
+    renderer->pushConstants(
+            computeData->getComputePipeline(), VK_SHADER_STAGE_COMPUTE_BIT,
+            0, uint32_t(correctOutputValues.size()));
+    renderer->dispatch(computeData, sgl::uiceil(uint32_t(correctOutputValues.size()), 512u), 1, 1);
+    renderer->insertBufferMemoryBarrier(
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+            inputBuffer);
+    outputBuffer->copyDataTo(stagingBuffer, renderer->getVkCommandBuffer());
+    renderer->endCommandBuffer();
+    renderer->submitToQueueImmediate();
+
+    ptr = static_cast<float_tpl*>(stagingBuffer->mapMemory());
+    for (size_t idx = 0; idx < correctOutputValues.size(); idx++) {
+        float_tpl valVulkan = ptr[idx];
+        float_tpl valCpu = correctOutputValues[idx];
+        float_tpl diff = std::abs(valVulkan - valCpu);
+        maxAbsError = std::max(maxAbsError, diff);
+        auto ulpExact = ulp(valCpu);
+        auto ulpDiff = std::ceil(std::abs(double(valCpu) - double(valVulkan)) / double(ulpExact));
+        maxUlpError = std::max(maxUlpError, uint64_t(ulpDiff));
+    }
+
+    correctOutputValues.clear();
+}
+
 // https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#spirvenv-op-prec
 template<typename float_tpl>
 void checkTrigonometricFunctionPrecision(
@@ -216,40 +256,20 @@ void checkTrigonometricFunctionPrecision(
         correctOutputValues.push_back(trigFn(value));
 
         if (correctOutputValues.size() >= maxNumValuesCollected) {
-            stagingBuffer->unmapMemory();
-
-            renderer->pushCommandBuffer(commandBuffer);
-            renderer->beginCommandBuffer();
-            stagingBuffer->copyDataTo(inputBuffer, renderer->getVkCommandBuffer());
-            renderer->insertBufferMemoryBarrier(
-                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                    inputBuffer);
-            renderer->pushConstants(
-                    computeData->getComputePipeline(), VK_SHADER_STAGE_COMPUTE_BIT,
-                    0, uint32_t(correctOutputValues.size()));
-            renderer->dispatch(computeData, sgl::uiceil(uint32_t(correctOutputValues.size()), 512u), 1, 1);
-            renderer->insertBufferMemoryBarrier(
-                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                    VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-                    inputBuffer);
-            outputBuffer->copyDataTo(stagingBuffer, renderer->getVkCommandBuffer());
-            renderer->endCommandBuffer();
-            renderer->submitToQueueImmediate();
-
-            ptr = static_cast<float_tpl*>(stagingBuffer->mapMemory());
-            for (size_t idx = 0; idx < correctOutputValues.size(); idx++) {
-                float_tpl valVulkan = ptr[idx];
-                float_tpl valCpu = correctOutputValues[idx];
-                float_tpl diff = std::abs(valVulkan - valCpu);
-                maxAbsError = std::max(maxAbsError, diff);
-                auto ulpExact = ulp(valCpu);
-                auto ulpDiff = std::ceil(std::abs(double(valCpu) - double(valVulkan)) / double(ulpExact));
-                maxUlpError = std::max(maxUlpError, uint64_t(ulpDiff));
-            }
-
-            correctOutputValues.clear();
+            computeMaximumError<float_tpl>(
+                    renderer, commandBuffer, computeData, inputBuffer, outputBuffer, stagingBuffer,
+                    correctOutputValues, ptr, maxAbsError, maxUlpError);
         }
+
+        if (value == std::numeric_limits<float>::max()) {
+            // Value cannot go past the limit.
+            break;
+        }
+    }
+    if (!correctOutputValues.empty()) {
+        computeMaximumError<float_tpl>(
+                renderer, commandBuffer, computeData, inputBuffer, outputBuffer, stagingBuffer,
+                correctOutputValues, ptr, maxAbsError, maxUlpError);
     }
     stagingBuffer->unmapMemory();
 
