@@ -28,8 +28,11 @@
 
 #define _USE_MATH_DEFINES
 #include <cmath>
+#include <queue>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <condition_variable>
 #include <utility>
 
 #include <Math/Math.hpp>
@@ -55,46 +58,6 @@
 #endif
 
 #define RES_TO_STR(r) case r: return #r
-
-std::string getComponentTypeString(VkComponentTypeKHR compType) {
-    switch (compType) {
-        case VK_COMPONENT_TYPE_FLOAT16_KHR:
-            return "float16";
-        case VK_COMPONENT_TYPE_FLOAT32_KHR:
-            return "float32";
-        case VK_COMPONENT_TYPE_FLOAT64_KHR:
-            return "float64";
-        case VK_COMPONENT_TYPE_SINT8_KHR:
-            return "sint8";
-        case VK_COMPONENT_TYPE_SINT16_KHR:
-            return "sint16";
-        case VK_COMPONENT_TYPE_SINT32_KHR:
-            return "sint32";
-        case VK_COMPONENT_TYPE_SINT64_KHR:
-            return "sint64";
-        case VK_COMPONENT_TYPE_UINT8_KHR:
-            return "uint8";
-        case VK_COMPONENT_TYPE_UINT16_KHR:
-            return "uint16";
-        case VK_COMPONENT_TYPE_UINT32_KHR:
-            return "uint32";
-        case VK_COMPONENT_TYPE_UINT64_KHR:
-            return "uint64";
-        case VK_COMPONENT_TYPE_BFLOAT16_KHR:
-            return "bloat16";
-        case VK_COMPONENT_TYPE_SINT8_PACKED_NV:
-            return "sint8_packed";
-        case VK_COMPONENT_TYPE_UINT8_PACKED_NV:
-            return "uint8_packed";
-        case VK_COMPONENT_TYPE_FLOAT_E4M3_NV:
-            return "float_e4m3";
-        case VK_COMPONENT_TYPE_FLOAT_E5M2_NV:
-            return "float_e5m2";
-        default:
-            return "UNKNOWN";
-    }
-}
-
 
 namespace sgl {
 // Override for nicer formating of bools.
@@ -136,31 +99,145 @@ std::enable_if_t<std::is_floating_point_v<T>, T> ulp(T x) {
     }
 }
 
+struct WorkPackage {
+    std::string functionGlslName;
+    std::string floatTypeGlslName;
+    sgl::vk::BufferPtr stagingBuffer;
+    sgl::vk::ComputeDataPtr computeData;
+    std::thread workThread;
+    float maxAbsError = 0.0f;
+    uint64_t maxUlpError = 0;
+};
+
+struct GpuWork {
+    std::mutex replyMutex;
+    std::condition_variable hasReplyConditionVariable;
+    bool hasReply = false;
+
+    sgl::vk::BufferPtr stagingBuffer;
+    sgl::vk::ComputeDataPtr computeData;
+    uint32_t numEntries{};
+};
+
+class GpuWorker {
+public:
+    GpuWorker(sgl::vk::Device* device, size_t batchBufferSize) : batchBufferSize(batchBufferSize) {
+        // Create renderer and command buffer.
+        renderer = new sgl::vk::Renderer(device);
+        sgl::vk::CommandPoolType commandPoolType;
+        commandPoolType.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        commandBuffer = std::make_shared<sgl::vk::CommandBuffer>(device, commandPoolType);
+        shaderManager = new sgl::vk::ShaderManagerVk(device);
+
+        inputBuffer = std::make_shared<sgl::vk::Buffer>(
+                device, batchBufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VMA_MEMORY_USAGE_GPU_ONLY);
+        outputBuffer = std::make_shared<sgl::vk::Buffer>(
+                device, batchBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VMA_MEMORY_USAGE_GPU_ONLY);
+
+        requesterThread = std::thread(&GpuWorker::mainLoop, this);
+    }
+    ~GpuWorker() {
+        join();
+        delete renderer;
+        delete shaderManager;
+    }
+    void queueWork(GpuWork* gpuWork) {
+        {
+            std::lock_guard lock(requestMutex);
+            workQueue.push(gpuWork);
+        }
+        hasRequestConditionVariable.notify_all();
+
+        while (true) {
+            std::unique_lock replyLock(gpuWork->replyMutex);
+            gpuWork->hasReplyConditionVariable.wait(replyLock, [gpuWork] { return gpuWork->hasReply; });
+            if (gpuWork->hasReply) {
+                gpuWork->hasReply = false;
+                break;
+            }
+        }
+    }
+    void mainLoop() {
+        while (true) {
+            std::unique_lock requestLock(requestMutex);
+            hasRequestConditionVariable.wait(requestLock, [this] { return !workQueue.empty(); });
+            if (workQueue.empty()) {
+                continue;
+            }
+            GpuWork* gpuWork = workQueue.front();
+            workQueue.pop();
+            requestLock.unlock();
+
+            if (!gpuWork) {
+                break;
+            }
+
+            {
+                std::lock_guard replyLock(gpuWork->replyMutex);
+                doWork(gpuWork);
+                gpuWork->hasReply = true;
+            }
+            gpuWork->hasReplyConditionVariable.notify_all();
+        }
+    }
+    void doWork(GpuWork* gpuWork) {
+        renderer->pushCommandBuffer(commandBuffer);
+        renderer->beginCommandBuffer();
+        gpuWork->stagingBuffer->copyDataTo(inputBuffer, renderer->getVkCommandBuffer());
+        renderer->insertBufferMemoryBarrier(
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                inputBuffer);
+        renderer->pushConstants(
+                gpuWork->computeData->getComputePipeline(), VK_SHADER_STAGE_COMPUTE_BIT, 0, gpuWork->numEntries);
+        renderer->dispatch(gpuWork->computeData, sgl::uiceil(gpuWork->numEntries, 512u), 1, 1);
+        renderer->insertBufferMemoryBarrier(
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                inputBuffer);
+        outputBuffer->copyDataTo(gpuWork->stagingBuffer, renderer->getVkCommandBuffer());
+        renderer->endCommandBuffer();
+        renderer->submitToQueueImmediate();
+    }
+    void join() {
+        {
+            std::lock_guard<std::mutex> lock(requestMutex);
+            workQueue.push(nullptr);
+        }
+        hasRequestConditionVariable.notify_all();
+        if (requesterThread.joinable()) {
+            requesterThread.join();
+        }
+    }
+
+    size_t batchBufferSize;
+    sgl::vk::Renderer* renderer;
+    sgl::vk::CommandBufferPtr commandBuffer;
+    sgl::vk::ShaderManagerVk* shaderManager;
+    sgl::vk::BufferPtr inputBuffer, outputBuffer;
+
+private:
+    std::thread requesterThread;
+
+    std::mutex requestMutex;
+    std::condition_variable hasRequestConditionVariable;
+    std::queue<GpuWork*> workQueue;
+};
+
 template<typename float_tpl>
 void computeMaximumError(
-        sgl::vk::Renderer* renderer, sgl::vk::CommandBufferPtr& commandBuffer, sgl::vk::ComputeDataPtr& computeData,
-        sgl::vk::BufferPtr& inputBuffer, sgl::vk::BufferPtr& outputBuffer, sgl::vk::BufferPtr& stagingBuffer,
+        GpuWorker* gpuWorker, GpuWork *work,
+        const sgl::vk::ComputeDataPtr& computeData, const sgl::vk::BufferPtr& stagingBuffer,
         std::vector<float>& correctOutputValues, float_tpl*& ptr, float_tpl& maxAbsError, uint64_t& maxUlpError) {
     stagingBuffer->unmapMemory();
 
-    renderer->pushCommandBuffer(commandBuffer);
-    renderer->beginCommandBuffer();
-    stagingBuffer->copyDataTo(inputBuffer, renderer->getVkCommandBuffer());
-    renderer->insertBufferMemoryBarrier(
-            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-            inputBuffer);
-    renderer->pushConstants(
-            computeData->getComputePipeline(), VK_SHADER_STAGE_COMPUTE_BIT,
-            0, uint32_t(correctOutputValues.size()));
-    renderer->dispatch(computeData, sgl::uiceil(uint32_t(correctOutputValues.size()), 512u), 1, 1);
-    renderer->insertBufferMemoryBarrier(
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-            inputBuffer);
-    outputBuffer->copyDataTo(stagingBuffer, renderer->getVkCommandBuffer());
-    renderer->endCommandBuffer();
-    renderer->submitToQueueImmediate();
+    work->stagingBuffer = stagingBuffer;
+    work->computeData = computeData;
+    work->numEntries = uint32_t(correctOutputValues.size());
+    work->hasReply = false;
+    gpuWorker->queueWork(work);
 
     ptr = static_cast<float_tpl*>(stagingBuffer->mapMemory());
     for (size_t idx = 0; idx < correctOutputValues.size(); idx++) {
@@ -179,28 +256,16 @@ void computeMaximumError(
 // https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#spirvenv-op-prec
 template<typename float_tpl>
 void checkTrigonometricFunctionPrecision(
+        std::vector<std::shared_ptr<WorkPackage>>& workPackages, GpuWorker* gpuWorker,
         sgl::vk::Device* device, const std::string& functionGlslName, std::function<float_tpl(float_tpl)> trigFn,
         const std::string& floatTypeGlslName, float_tpl minRangeFloat, float_tpl maxRangeFloat,
         bool minInclusive, bool maxInclusive) {
     //using uint_tpl = std::conditional_t<sizeof(float_tpl) == sizeof(uint32_t), uint32_t, uint16_t>;
 
-    size_t batchBufferSize = std::min(size_t(1 << 30), size_t(device->getLimits().maxStorageBufferRange));
+    size_t batchBufferSize = gpuWorker->batchBufferSize;
     size_t maxNumValuesCollected = sgl::ulceil(batchBufferSize, 4ull);
-    batchBufferSize = batchBufferSize * 4ull;
     sgl::vk::BufferPtr stagingBuffer = std::make_shared<sgl::vk::Buffer>(
             device, batchBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
-    sgl::vk::BufferPtr inputBuffer = std::make_shared<sgl::vk::Buffer>(
-            device, batchBufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VMA_MEMORY_USAGE_GPU_ONLY);
-    sgl::vk::BufferPtr outputBuffer = std::make_shared<sgl::vk::Buffer>(
-            device, batchBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VMA_MEMORY_USAGE_GPU_ONLY);
-
-    // Create renderer and command buffer.
-    auto renderer = new sgl::vk::Renderer(device);
-    sgl::vk::CommandPoolType commandPoolType;
-    commandPoolType.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    auto commandBuffer = std::make_shared<sgl::vk::CommandBuffer>(device, commandPoolType);
 
     std::map<std::string, std::string> preprocessorDefines = {
             { "float_tpl", floatTypeGlslName },
@@ -226,18 +291,14 @@ void checkTrigonometricFunctionPrecision(
         }
     }
     )";
-    auto* shaderManager = new sgl::vk::ShaderManagerVk(device);
-    auto shaderStages = shaderManager->compileComputeShaderFromStringCached(
+    auto shaderStages = gpuWorker->shaderManager->compileComputeShaderFromStringCached(
             floatTypeGlslName + "_" + functionGlslName + ".Compute", SHADER_STRING_WRITE_IMAGE_COMPUTE,
             preprocessorDefines);
     sgl::vk::ComputePipelineInfo computePipelineInfo(shaderStages);
     sgl::vk::ComputePipelinePtr computePipeline = std::make_shared<sgl::vk::ComputePipeline>(device, computePipelineInfo);
-    auto computeData = std::make_shared<sgl::vk::ComputeData>(renderer, computePipeline);
-    computeData->setStaticBuffer(inputBuffer, 0);
-    computeData->setStaticBuffer(outputBuffer, 1);
-
-    float_tpl maxAbsError = 0.0f;
-    uint64_t maxUlpError = 0;
+    auto computeData = std::make_shared<sgl::vk::ComputeData>(gpuWorker->renderer, computePipeline);
+    computeData->setStaticBuffer(gpuWorker->inputBuffer, 0);
+    computeData->setStaticBuffer(gpuWorker->outputBuffer, 1);
 
     if (!minInclusive) {
         minRangeFloat = std::nexttoward(minRangeFloat, std::numeric_limits<float_tpl>::infinity());
@@ -248,51 +309,61 @@ void checkTrigonometricFunctionPrecision(
         maxRangeFloat -= 2.0f * std::numeric_limits<float_tpl>::epsilon();
     }
 
-    std::vector<float> correctOutputValues;
-    correctOutputValues.reserve(maxNumValuesCollected);
-    auto* ptr = static_cast<float*>(stagingBuffer->mapMemory());
-    for (float value = minRangeFloat; value <= maxRangeFloat; value = std::nextafter(value, std::numeric_limits<float>::max())) {
-        ptr[correctOutputValues.size()] = value;
-        correctOutputValues.push_back(trigFn(value));
+    auto workPackage = std::make_shared<WorkPackage>();
+    workPackage->functionGlslName = functionGlslName;
+    workPackage->floatTypeGlslName = floatTypeGlslName;
+    workPackage->stagingBuffer = stagingBuffer;
+    workPackage->computeData = computeData;
+    workPackage->workThread = std::thread([gpuWorker, workPackage, computeData, stagingBuffer, maxNumValuesCollected, trigFn, minRangeFloat, maxRangeFloat] {
+        auto* gpuWork = new GpuWork;
+        float_tpl& maxAbsError = workPackage->maxAbsError;
+        uint64_t& maxUlpError = workPackage->maxUlpError;
 
-        if (correctOutputValues.size() >= maxNumValuesCollected) {
+        std::vector<float> correctOutputValues;
+        correctOutputValues.reserve(maxNumValuesCollected);
+        auto* ptr = static_cast<float*>(stagingBuffer->mapMemory());
+        for (float value = minRangeFloat; value <= maxRangeFloat; value = std::nextafter(value, std::numeric_limits<float>::max())) {
+            ptr[correctOutputValues.size()] = value;
+            correctOutputValues.push_back(trigFn(value));
+
+            if (correctOutputValues.size() >= maxNumValuesCollected) {
+                computeMaximumError<float_tpl>(
+                        gpuWorker, gpuWork,
+                        computeData, stagingBuffer, correctOutputValues, ptr, maxAbsError, maxUlpError);
+            }
+
+            if (value == std::numeric_limits<float>::max()) {
+                // Value cannot go past the limit.
+                break;
+            }
+        }
+        if (!correctOutputValues.empty()) {
             computeMaximumError<float_tpl>(
-                    renderer, commandBuffer, computeData, inputBuffer, outputBuffer, stagingBuffer,
-                    correctOutputValues, ptr, maxAbsError, maxUlpError);
+                    gpuWorker, gpuWork,
+                    computeData, stagingBuffer, correctOutputValues, ptr, maxAbsError, maxUlpError);
         }
-
-        if (value == std::numeric_limits<float>::max()) {
-            // Value cannot go past the limit.
-            break;
-        }
-    }
-    if (!correctOutputValues.empty()) {
-        computeMaximumError<float_tpl>(
-                renderer, commandBuffer, computeData, inputBuffer, outputBuffer, stagingBuffer,
-                correctOutputValues, ptr, maxAbsError, maxUlpError);
-    }
-    stagingBuffer->unmapMemory();
-
-    writeOut(
-            "Maximum error for ", floatTypeGlslName, ", ", functionGlslName,
-            ": abs ", sgl::toStringScientific(maxAbsError), ", ULP ", maxUlpError);
-
-    computeData = {};
-    delete renderer;
+        stagingBuffer->unmapMemory();
+        delete gpuWork;
+    });
+    workPackages.push_back(workPackage);
 }
 
 template<typename float_tpl>
 void checkTrigonometricFunctionPrecision(
+        std::vector<std::shared_ptr<WorkPackage>>& workPackages, GpuWorker* gpuWorker,
         sgl::vk::Device* device, const std::string& functionGlslName, std::function<float_tpl(float_tpl)> trigFn,
         const std::string& floatTypeGlslName, float_tpl minRangeFloat, float_tpl maxRangeFloat) {
     checkTrigonometricFunctionPrecision(
+            workPackages, gpuWorker,
             device, functionGlslName, std::move(trigFn), floatTypeGlslName, minRangeFloat, maxRangeFloat, true, true);
 }
 template<typename float_tpl>
 void checkTrigonometricFunctionPrecision(
+        std::vector<std::shared_ptr<WorkPackage>>& workPackages, GpuWorker* gpuWorker,
         sgl::vk::Device* device, const std::string& functionGlslName, std::function<float_tpl(float_tpl)> trigFn,
         const std::string& floatTypeGlslName, float_tpl minRangeFloat, float_tpl maxRangeFloat, bool rangeInclusive) {
     checkTrigonometricFunctionPrecision(
+            workPackages, gpuWorker,
             device, functionGlslName, std::move(trigFn), floatTypeGlslName, minRangeFloat, maxRangeFloat, rangeInclusive, rangeInclusive);
 }
 
@@ -393,38 +464,57 @@ void checkVulkanDeviceFeatures(sgl::vk::Device* device) {
     writeOut("Shader float16 support: ", bool(device->getPhysicalDeviceVulkan12Features().shaderFloat16));
     writeOut("Shader bfloat16 support: ", bool(device->getPhysicalDeviceShaderBfloat16Features().shaderBFloat16Type));
 
+    size_t batchBufferSize = std::min(size_t(1 << 28), size_t(device->getLimits().maxStorageBufferRange));
+    size_t maxNumValuesCollected = sgl::ulceil(batchBufferSize, 4ull);
+    batchBufferSize = maxNumValuesCollected * 4ull;
+    auto* gpuWorker = new GpuWorker(device, batchBufferSize);
+
+    std::vector<std::shared_ptr<WorkPackage>> workPackages;
     checkTrigonometricFunctionPrecision<float>(
-            device, "sin", [](float value){ return std::sin(value); }, "float", float(-M_PI), float(M_PI));
+            workPackages, gpuWorker, device, "sin", [](float value){ return std::sin(value); }, "float",
+            float(-M_PI), float(M_PI));
     checkTrigonometricFunctionPrecision<float>(
-            device, "cos", [](float value){ return std::cos(value); }, "float", float(-M_PI), float(M_PI));
+            workPackages, gpuWorker, device, "cos", [](float value){ return std::cos(value); }, "float",
+            float(-M_PI), float(M_PI));
     checkTrigonometricFunctionPrecision<float>(
-            device, "tan", [](float value){ return std::tan(value); }, "float",
+            workPackages, gpuWorker, device, "tan", [](float value){ return std::tan(value); }, "float",
             float(-0.5 * M_PI), float(0.5 * M_PI), false);
     checkTrigonometricFunctionPrecision<float>(
-            device, "atan", [](float value){ return std::atan(value); }, "float",
+            workPackages, gpuWorker, device, "atan", [](float value){ return std::atan(value); }, "float",
             std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max());
     checkTrigonometricFunctionPrecision<float>(
-            device, "asin", [](float value){ return std::asin(value); }, "float", -1.0f, 1.0f);
+            workPackages, gpuWorker, device, "asin", [](float value){ return std::asin(value); }, "float",
+            -1.0f, 1.0f);
     checkTrigonometricFunctionPrecision<float>(
-            device, "acos", [](float value){ return std::acos(value); }, "float", -1.0f, 1.0f);
+            workPackages, gpuWorker, device, "acos", [](float value){ return std::acos(value); }, "float",
+            -1.0f, 1.0f);
     checkTrigonometricFunctionPrecision<float>(
-            device, "exp", [](float value){ return std::exp(value); }, "float",
+            workPackages, gpuWorker, device, "exp", [](float value){ return std::exp(value); }, "float",
             0.5f, 2.0f);
     checkTrigonometricFunctionPrecision<float>(
-            device, "exp2", [](float value){ return std::exp2(value); }, "float",
+            workPackages, gpuWorker, device, "exp2", [](float value){ return std::exp2(value); }, "float",
             0.5f, 2.0f);
     checkTrigonometricFunctionPrecision<float>(
-            device, "log", [](float value){ return std::log(value); }, "float",
+            workPackages, gpuWorker, device, "log", [](float value){ return std::log(value); }, "float",
             0.0f, std::numeric_limits<float>::max(), false, true);
     checkTrigonometricFunctionPrecision<float>(
-            device, "log2", [](float value){ return std::log2(value); }, "float",
+            workPackages, gpuWorker, device, "log2", [](float value){ return std::log2(value); }, "float",
             0.0f, std::numeric_limits<float>::max(), false, true);
     checkTrigonometricFunctionPrecision<float>(
-            device, "sqrt", [](float value){ return std::sqrt(value); }, "float",
+            workPackages, gpuWorker, device, "sqrt", [](float value){ return std::sqrt(value); }, "float",
             0.0f, std::numeric_limits<float>::max(), false, true);
     checkTrigonometricFunctionPrecision<float>(
-            device, "inversesqrt", [](float value){ return 1.0f / std::sqrt(value); }, "float",
-            0.0f, std::numeric_limits<float>::max());
+            workPackages, gpuWorker, device, "inversesqrt", [](float value){ return 1.0f / std::sqrt(value); }, "float",
+            0.0f, std::numeric_limits<float>::max(), false, true);
+
+    for (auto& workPackage : workPackages) {
+        workPackage->workThread.join();
+        writeOut(
+                "Maximum error for ", workPackage->floatTypeGlslName, ", ", workPackage->functionGlslName,
+                ": abs ", sgl::toStringScientific(workPackage->maxAbsError), ", ULP ", workPackage->maxUlpError);
+    }
+    workPackages = {};
+    delete gpuWorker;
 }
 
 int main(int argc, char *argv[]) {
