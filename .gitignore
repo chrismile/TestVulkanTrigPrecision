@@ -1,0 +1,83 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# CMake
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+
+# VS Code
+.vscode/*
+/Debug/*
+
+# Eclipse
+.cproject
+.project
+.settings/*
+
+# Doxygen
+docs/html/*
+docs/latex/*
+
+/Debug/
+/build/*
+/build-*/
+
+# CLion
+.idea/*
+*/.idea/*
+cmake-build-*/
+
+Data/Screenshots/*
+Data/Checkpoints/*
+Data/DataSets/*
+Data/tmp/*
+
+imgui.ini
+
+# Build script
+Shipping/*
+.build/*
+.build_*
+dependencies/*
+vcpkg_installed/*
+third_party/vcpkg
+third_party/VulkanSDK
+
+# macOS
+.DS_Store

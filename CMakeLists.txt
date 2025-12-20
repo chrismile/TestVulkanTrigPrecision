@@ -1,0 +1,138 @@
+cmake_minimum_required(VERSION 3.10...4.0)
+
+project(TestVulkanTrigPrecision)
+
+set(CMAKE_CXX_STANDARD 17)
+
+file(GLOB_RECURSE SOURCES src/*.cpp src/*.c src/*.hpp src/*.h)
+include_directories(src)
+
+if(MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zc:__cplusplus")
+    # Avoid warning 'IMPORTED_IMPLIB not set for imported target "sgl" configuration "MinSizeRel/RelWithDebInfo".'
+    set(CMAKE_CONFIGURATION_TYPES Debug Release)
+endif()
+
+if(MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -W3 /EHsc /Zc:__cplusplus")
+elseif(CMAKE_COMPILER_IS_GNUCXX)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall")
+endif()
+
+option(USE_STATIC_STD_LIBRARIES "Link with standard libraries statically." OFF)
+
+if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src")
+    message(FATAL_ERROR "Error: Submodules are not cloned. Please call \"git submodule update --init --recursive\".")
+endif()
+
+if (NOT WIN32)
+    list(REMOVE_ITEM SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/WindowsUtils.hpp)
+    list(REMOVE_ITEM SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/WindowsUtils.cpp)
+endif()
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/Convert.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/StringUtils.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/Env.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/Dialog.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/Timer.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/AppSettings.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/Json/SimpleJson.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/File/Execute.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/File/FileLoader.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/File/Logfile.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/File/FileUtils.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/Events/EventManager.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/Events/Stream/BinaryStream.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Utils/Events/Stream/StringStream.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/ImGui/Widgets/NumberFormatting.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/GLSL/PreprocessorGlsl.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/libs/volk/volk.c")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/libs/SPIRV-Reflect/spirv_reflect.c")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Utils/VmaImpl.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Utils/Memory.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Utils/Instance.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Utils/Status.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Utils/Device.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Utils/SyncObjects.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Buffers/Buffer.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Buffers/Framebuffer.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Image/Image.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Shader/Shader.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Shader/ShaderManager.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Render/CommandBuffer.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Render/Pipeline.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Render/ComputePipeline.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Render/GraphicsPipeline.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Render/RayTracingPipeline.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Render/Data.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Render/Helpers.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Render/Renderer.cpp")
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sgl/src/Graphics/Vulkan/Render/Passes/Pass.cpp")
+
+if (WIN32)
+    set(GLSLANG_SYS_NAME "Windows")
+else()
+    set(GLSLANG_SYS_NAME "Unix")
+endif()
+file(GLOB_RECURSE SOURCES_GLSLANG
+        third_party/glslang/SPIRV/*.cpp
+        third_party/glslang/glslang/CInterface/*.cpp
+        third_party/glslang/glslang/GenericCodeGen/*.cpp
+        third_party/glslang/glslang/MachineIndependent/*.cpp
+        third_party/glslang/glslang/ResourceLimits/*.cpp)
+file(GLOB_RECURSE SOURCES_GLSLANG
+        third_party/glslang/SPIRV/*.cpp
+        third_party/glslang/glslang/CInterface/*.cpp
+        third_party/glslang/glslang/GenericCodeGen/*.cpp
+        third_party/glslang/glslang/MachineIndependent/*.cpp
+        third_party/glslang/glslang/ResourceLimits/*.cpp
+        third_party/glslang/glslang/OSDependent/${GLSLANG_SYS_NAME}/*.cpp)
+add_library(glslang STATIC ${SOURCES_GLSLANG})
+target_compile_definitions(glslang PRIVATE ENABLE_SPIRV)
+target_include_directories(glslang PUBLIC third_party/glslang)
+target_include_directories(glslang PUBLIC third_party/custom)
+
+add_executable(BufferTest64 ${SOURCES} ${CUDA_SOURCES})
+target_include_directories(BufferTest64 PRIVATE third_party)
+target_include_directories(BufferTest64 PRIVATE third_party/sgl/src)
+target_include_directories(BufferTest64 PRIVATE third_party/sgl/src/Graphics/Vulkan/libs)
+target_include_directories(BufferTest64 PRIVATE third_party/sgl/src/Graphics/Vulkan/libs/Vulkan-Headers)
+target_compile_definitions(BufferTest64 PRIVATE DLL_OBJECT=)
+target_compile_definitions(BufferTest64 PRIVATE SUPPORT_VULKAN)
+target_compile_definitions(BufferTest64 PRIVATE SUPPORT_GLSLANG_BACKEND)
+target_compile_definitions(BufferTest64 PRIVATE DISABLE_IMGUI)
+target_compile_definitions(BufferTest64 PRIVATE DISABLE_VULKAN_SWAPCHAIN_SUPPORT)
+target_compile_definitions(BufferTest64 PRIVATE DISABLE_DEVICE_SELECTION_SUPPORT)
+target_compile_definitions(BufferTest64 PRIVATE DISABLE_SCENE_GRAPH_SOURCES)
+if (WIN32)
+    target_compile_definitions(BufferTest64 PRIVATE DISABLE_SINGLETON_BOOST_INTERPROCESS)
+endif()
+
+target_link_libraries(BufferTest64 PRIVATE glslang)
+
+if (${USE_STATIC_STD_LIBRARIES})
+    if((MSYS OR MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")) AND ${USE_STATIC_STD_LIBRARIES})
+        target_link_options(BufferTest64 PRIVATE -static-libgcc -static-libstdc++ -static -lpthread)
+    endif()
+    if(UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_link_options(BufferTest64 PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/CMake/symbols_linux_gcc.map")
+    endif()
+    if (MSVC)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endif()
+endif()
+
+if(MSVC)
+    set_target_properties(TestVulkanTrigPrecision PROPERTIES LINK_FLAGS_DEBUG "/SUBSYSTEM:CONSOLE")
+    set_target_properties(TestVulkanTrigPrecision PROPERTIES COMPILE_DEFINITIONS_DEBUG "_CONSOLE")
+    set_target_properties(TestVulkanTrigPrecision PROPERTIES LINK_FLAGS_RELWITHDEBINFO "/SUBSYSTEM:CONSOLE")
+    set_target_properties(TestVulkanTrigPrecision PROPERTIES COMPILE_DEFINITIONS_RELWITHDEBINFO "_CONSOLE")
+    set_target_properties(TestVulkanTrigPrecision PROPERTIES LINK_FLAGS_RELEASE "/SUBSYSTEM:CONSOLE")
+    set_target_properties(TestVulkanTrigPrecision PROPERTIES LINK_FLAGS_MINSIZEREL "/SUBSYSTEM:CONSOLE")
+endif()
+
+if(MSYS OR MINGW OR (${CMAKE_GENERATOR} STREQUAL "MinGW Makefiles") OR (${CMAKE_GENERATOR} STREQUAL "MSYS Makefiles"))
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -mconsole")
+    target_link_libraries(TestVulkanTrigPrecision PUBLIC mingw32)
+endif()
