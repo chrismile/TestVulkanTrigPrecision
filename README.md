@@ -73,7 +73,7 @@ Some special cases:
 - __exp10f(x): <= 2 + floor(abs(2.97 * x)) ULP
 
 The Vulkan precision seems to match the intrinsic trigonometric functions. Below, results measured on an RTX 3090 can
-be found.
+be found (Linux, driver 580.95.05).
 
 | Function | Absolute | ULP error | Range             |
 |----------|----------|-----------|-------------------|
@@ -87,4 +87,52 @@ be found.
 | exp2(x)  | 2.384e-7 | 1         | $[0.5, 2]$        |
 | log(x)   | 7.629e-6 | 10471343  | $(0, \infty)$     |
 | log2(x)  | 7.629e-6 | 10437179  | $(0, \infty)$     |
+| sqrt(x)  | 1.10e+12 | 1         | $[0, \infty)$     |
+
+
+### Intel
+
+I tested the precision of an Intel Core i9-12900H laptop iGPU, called "Intel Iris Xe Graphics (ADL GT2)".
+Below, the measurements on Windows with driver 101.7082 can be found.
+
+| Function | Absolute | ULP error | Range             |
+|----------|----------|-----------|-------------------|
+| sin(x)   | 3.439e-5 | 16777215  | $[-\pi, \pi]$     |
+| cos(x)   | 3.439e-5 | 12303662  | $[-\pi, \pi]$     |
+| tan(x)   | 3.894e+5 | 16777215  | $(-\pi/2, \pi/2)$ |
+| atan(x)  | 1.192e-7 | 8388607   | full              |
+| asin(x)  | 2.384e-7 | 8388607   | $[-1, 1]$         |
+| acos(x)  | 2.384e-7 | 3         | $[-1, 1]$         |
+| exp(x)   | 9.537e-7 | 2         | $[0.5, 2]$        |
+| exp2(x)  | 2.384e-7 | 2         | $[0.5, 2]$        |
+| log(x)   | 7.629e-6 | 75        | $(0, \infty)$     |
+| log2(x)  | 7.629e-6 | 56        | $(0, \infty)$     |
+| sqrt(x)  | 1.10e+12 | 1         | $[0, \infty)$     |
+
+On Linux with Mesa 25.2.7, there is three functions with a different precision than on Windows:
+
+| Function | Absolute | ULP error | Range             |
+|----------|----------|-----------|-------------------|
+| atan(x)  | 3.338e-6 | 8388781   | full              |
+| asin(x)  | 3.905e-4 | 8388607   | $[-1, 1]$         |
+| acos(x)  | 1.563e-4 | 4204      | $[-1, 1]$         |
+
+
+### AMD
+
+I tested the precision on the Steam Deck iGPU, called "AMD Custom GPU 0405 (RADV VANGOGH)".
+Below, the measurements for Mesa 26.0.0-devel (git-614a049789) can be found.
+
+| Function | Absolute | ULP error | Range             |
+|----------|----------|-----------|-------------------|
+| sin(x)   | 2.682e-7 | 16777215  | $[-\pi, \pi]$     |
+| cos(x)   | 2.384e-7 | 12303662  | $[-\pi, \pi]$     |
+| tan(x)   | 5.154e+5 | 16777215  | $(-\pi/2, \pi/2)$ |
+| atan(x)  | 3.338e-6 | 8388781   | full              |
+| asin(x)  | 3.905e-4 | 8388607   | $[-1, 1]$         |
+| acos(x)  | 1.563e-4 | 4204      | $[-1, 1]$         |
+| exp(x)   | 9.537e-7 | 2         | $[0.5, 2]$        |
+| exp2(x)  | 2.384e-7 | 1         | $[0.5, 2]$        |
+| log(x)   | 7.629e-6 | 2         | $(0, \infty)$     |
+| log2(x)  | 7.629e-6 | 1         | $(0, \infty)$     |
 | sqrt(x)  | 1.10e+12 | 1         | $[0, \infty)$     |
